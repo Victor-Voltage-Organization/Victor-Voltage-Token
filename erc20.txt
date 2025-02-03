@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: MIT
+ pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/extensions/dynamic/ERC20Burnable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract VictorVoltageToken is ERC20Burnable, Ownable {
+    // ...
+}
+ super._transfer(sender, recipient, transferAmount);     
+            super._transfer(sender, recipient, amount);
+        //...
+            uint256 tithingAmount = amount.mul(TITHING_TAX).div(10000);
+            uint256 burnAmount = amount.mul(BURN_TAX).div(10000);
+            uint256 lpAmount = amount.mul(LP_INJECTION_TAX).div(10000);
+            uint256 reflectionAmount = amount.mul(REFLECTION_TAX).div(10000);
+            uint256 treasuryAmount = amount.mul(TREASURY_TAX).div(10000);
+
+            uint256 totalTax = tithingAmount.add(burnAmount).add(lpAmount).add(reflectionAmount).add(treasuryAmount);
+            uint256 transferAmount = amount.sub(totalTax);
+
+            // Distribute taxes
+            super._transfer(sender, treasuryWallet, treasuryAmount);
+            super._transfer(sender, lpWallet, lpAmount);
+            _reflectFee(sender, reflectionAmount);
+            _burn(sender, burnAmount);
+
+            totalBurned = totalBurned.add(burnAmount);
+
+            emit TaxesDistributed(
+                tithingAmount,
+                burnAmount,
+                lpAmount,
+                reflectionAmount,
+                treasuryAmount
+            );
+
+            super._transfer(sender, recipient, transferAmount);
+        }
+    }
+
+    function _reflectFee(address sender, uint256 reflectionAmount) private {
+        uint256 totalSupply = totalSupply();
+        if (totalSupply > 0) {
+            for (uint256 i = 0; i < balanceOf(sender); i++) {
+                uint256 share = balanceOf(sender).mul(reflectionAmount).div(totalSupply);
+                _transfer(sender, address(this), share);
+            }
+        }
+    }
+
+    function excludeFromFees(address account, bool excluded) external onlyOwner {
+        _isExcludedFromFees[account] = excluded;
+    }
+
+    function isExcludedFromFees(address account) external view returns (bool) {
+        return _isExcludedFromFees[account];
+    }
+}
