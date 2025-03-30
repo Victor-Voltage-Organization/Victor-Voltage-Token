@@ -1,8 +1,10 @@
-# VictorVoltage Token (V V)
+# Victor Voltage Token (V V)
 
 ## Overview
 
-VictorVoltage Token (VV) is an ERC20 token implemented on the Ethereum blockchain. It features a deflationary mechanism, reflection rewards, and various tax structures for different transaction types.
+Victor Voltage is a hyper-deflationary, donation-based ERC-20 token designed to fund Voltage Institute, a revolutionary 
+trade school ( Electrical Welding HVAC Plumbing Culinary Auto Repair). Built with a renounced smart contract and indefinite locked liquidity pool, it ensures sustainability, transparency, and long-term impact. Every transaction directly supports education, career-building, and financial empowerment. Victor Voltage is revolutionizing trade education through blockchain, fostering community-driven empowerment, and bringing innovated solutions to home schooling families, and also providing real-world utility. Upon graduation, every student will receive a full set of tools, courtesy of Victor Voltage, to jump start their careers. Additionally, graduates will plan on immediately begin working, with their first-year apprenticeships structured to benefit both them and local businesses.
+It is offcially time for change. BUCKLE UP - IT ALL STARTS HERE.
 
 ## Key Features
 
