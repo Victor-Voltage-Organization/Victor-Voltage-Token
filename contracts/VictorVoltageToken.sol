@@ -2,11 +2,10 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 
-contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
+contract VictorVoltageToken is ERC20, ReentrancyGuard, Pausable {
     uint256 public constant TOTAL_SUPPLY = 170 * 10 ** 12 * 10 ** 18;
     uint256 public constant TRANSFER_TAX = 170;
     uint256 public constant BUY_SELL_TAX = 1700;
@@ -48,11 +47,11 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         address _treasuryWallet,
         address _lpWallet,
         address _tithingWallet
-    ) ERC20("VictorVoltage", "V V") Ownable(msg.sender) {
+    ) ERC20("VictorVoltage", "V V") {
         require(
             _treasuryWallet != address(0) &&
-                _lpWallet != address(0) &&
-                _tithingWallet != address(0),
+            _lpWallet != address(0) &&
+            _tithingWallet != address(0),
             "Zero address not allowed"
         );
 
@@ -67,7 +66,7 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         _isExcludedFromFees[msg.sender] = true;
         _isExcludedFromFees[address(this)] = true;
 
-        maxTransactionAmount = TOTAL_SUPPLY / 100; // 1% of total supply
+        maxTransactionAmount = TOTAL_SUPPLY / 100;
 
         emit Transfer(address(0), msg.sender, TOTAL_SUPPLY);
     }
@@ -121,13 +120,6 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
 
         if (_isExcluded[sender]) {
             _tOwned[sender] = _tOwned[sender] - tAmount;
-            if (_tOwned[sender] < rAmount) {
-                revert ERC20InsufficientBalance(
-                    sender,
-                    _tOwned[sender],
-                    tAmount
-                );
-            }
         }
         if (_isExcluded[recipient]) {
             _tOwned[recipient] = _tOwned[recipient] + tTransferAmount;
@@ -187,12 +179,7 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         uint256 burnAmount = (taxAmount * BURN_TAX) / BUY_SELL_TAX;
         uint256 reflectionAmount = (taxAmount * REFLECTION_TAX) / BUY_SELL_TAX;
         uint256 lpAmount = (taxAmount * LP_INJECTION_TAX) / BUY_SELL_TAX;
-        // uint256 treasuryAmount = taxAmount * TREASURY_TAX / BUY_SELL_TAX;
-        uint256 treasuryAmount = taxAmount -
-            tithingAmount -
-            burnAmount -
-            reflectionAmount -
-            lpAmount;
+        uint256 treasuryAmount = taxAmount - tithingAmount - burnAmount - reflectionAmount - lpAmount;
 
         _transfer(address(this), treasuryWallet, treasuryAmount);
         _transfer(address(this), lpWallet, lpAmount);
@@ -211,16 +198,15 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         );
     }
 
-    function setUniswapPair(address _uniswapPair) external onlyOwner {
+    // Publicly callable functions, formerly onlyOwner
+
+    function setUniswapPair(address _uniswapPair) external {
         require(_uniswapPair != address(0), "Invalid Uniswap pair address");
         uniswapPair = _uniswapPair;
         emit UniswapPairSet(_uniswapPair);
     }
 
-    function excludeFromFees(
-        address account,
-        bool excluded
-    ) external onlyOwner {
+    function excludeFromFees(address account, bool excluded) external {
         require(account != address(0), "Cannot exclude zero address");
         _isExcludedFromFees[account] = excluded;
     }
@@ -229,37 +215,26 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         return _isExcludedFromFees[account];
     }
 
-    function updateTreasuryWallet(
-        address newTreasuryWallet
-    ) external onlyOwner {
-        require(
-            newTreasuryWallet != address(0),
-            "New treasury wallet cannot be zero address"
-        );
+    function updateTreasuryWallet(address newTreasuryWallet) external {
+        require(newTreasuryWallet != address(0), "Cannot be zero address");
         treasuryWallet = newTreasuryWallet;
         emit WalletUpdated("Treasury Wallet", newTreasuryWallet);
     }
 
-    function updateLpWallet(address newLpWallet) external onlyOwner {
-        require(
-            newLpWallet != address(0),
-            "New LP wallet cannot be zero address"
-        );
+    function updateLpWallet(address newLpWallet) external {
+        require(newLpWallet != address(0), "Cannot be zero address");
         lpWallet = newLpWallet;
         emit WalletUpdated("LP Wallet", newLpWallet);
     }
 
-    function updateTithingWallet(address newTithingWallet) external onlyOwner {
-        require(
-            newTithingWallet != address(0),
-            "New Tithing wallet cannot be zero address"
-        );
+    function updateTithingWallet(address newTithingWallet) external {
+        require(newTithingWallet != address(0), "Cannot be zero address");
         tithingWallet = newTithingWallet;
         emit WalletUpdated("Tithing Wallet", newTithingWallet);
     }
 
-    function excludeFromReward(address account) external onlyOwner {
-        require(!_isExcluded[account], "Account is already excluded");
+    function excludeFromReward(address account) external {
+        require(!_isExcluded[account], "Already excluded");
         if (_rOwned[account] > 0) {
             _tOwned[account] = tokenFromReflection(_rOwned[account]);
         }
@@ -267,8 +242,8 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         _excluded.push(account);
     }
 
-    function includeInReward(address account) external onlyOwner {
-        require(_isExcluded[account], "Account is not excluded");
+    function includeInReward(address account) external {
+        require(_isExcluded[account], "Not excluded");
         for (uint256 i = 0; i < _excluded.length; i++) {
             if (_excluded[i] == account) {
                 _excluded[i] = _excluded[_excluded.length - 1];
@@ -280,13 +255,8 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         }
     }
 
-    function tokenFromReflection(
-        uint256 rAmount
-    ) public view returns (uint256) {
-        require(
-            rAmount <= _rTotal,
-            "Amount must be less than total reflections"
-        );
+    function tokenFromReflection(uint256 rAmount) public view returns (uint256) {
+        require(rAmount <= _rTotal, "Too much");
         uint256 currentRate = _getRate();
         return rAmount / currentRate;
     }
@@ -296,16 +266,16 @@ contract VictorVoltageToken is ERC20, Ownable, ReentrancyGuard, Pausable {
         return tokenFromReflection(_rOwned[account]);
     }
 
-    function setMaxTransactionAmount(uint256 amount) external onlyOwner {
+    function setMaxTransactionAmount(uint256 amount) external {
         require(amount > 0 && amount <= TOTAL_SUPPLY / 10, "Invalid amount");
         maxTransactionAmount = amount;
     }
 
-    function pause() external onlyOwner {
+    function pause() external {
         _pause();
     }
 
-    function unpause() external onlyOwner {
+    function unpause() external {
         _unpause();
     }
 }
