@@ -1,38 +1,57 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract VictorVoltageToken is ERC20, ReentrancyGuard, Pausable {
-    uint256 public constant TOTAL_SUPPLY = 170 * 10 ** 12 * 10 ** 18;
-    uint256 public constant TRANSFER_TAX = 170;
-    uint256 public constant BUY_SELL_TAX = 1700;
+/// @title  VictorVoltage (V V) – Reflective Tax Token
+/// @notice 1.7% transfer tax / 17% buy-sell tax, split into tithing, burn, reflection, LP, treasury.
+/// @dev Uses basis-points (bps) for all rates; pins to latest Solidity release.
+contract VictorVoltageToken is ERC20, Ownable, Pausable, ReentrancyGuard {
+    /*//////////////////////////////////////////////////////////////
+                               CONSTANTS
+    //////////////////////////////////////////////////////////////*/
+    uint256 public constant INITIAL_SUPPLY    = 170 * 10**12 * 10**18;
+    uint16  public constant TRANSFER_TAX_BPS  = 170;   // 1.7%
+    uint16  public constant TRADE_TAX_BPS     = 1700;  // 17%
 
-    uint256 public constant TITHING_TAX = 170;
-    uint256 public constant BURN_TAX = 170;
-    uint256 public constant REFLECTION_TAX = 170;
-    uint256 public constant LP_INJECTION_TAX = 170;
-    uint256 public constant TREASURY_TAX = 1020;
+    // breakdown of TRADE_TAX_BPS (bps relative to TRADE_TAX_BPS)
+    uint16 private constant TITHING_BPS      = 170;   // 1.7%
+    uint16 private constant BURN_BPS         = 170;   // 1.7%
+    uint16 private constant REFLECTION_BPS   = 170;   // 1.7%
+    uint16 private constant LP_BPS           = 170;   // 1.7%
+    uint16 private constant TREASURY_BPS     = 1020;  // 10.2%
 
+    /*//////////////////////////////////////////////////////////////
+                              STATE VARIABLES
+    //////////////////////////////////////////////////////////////*/
     address public treasuryWallet;
     address public lpWallet;
     address public tithingWallet;
     address public uniswapPair;
+    uint256 public maxTxAmount;
 
-    uint256 public totalBurned;
+    // reflection bookkeeping
     uint256 private _rTotal;
     uint256 private _tTotal;
-
-    mapping(address => bool) private _isExcludedFromFees;
     mapping(address => uint256) private _rOwned;
     mapping(address => uint256) private _tOwned;
-    mapping(address => bool) private _isExcluded;
-    address[] private _excluded;
+    mapping(address => bool)    private _isExcludedFromFee;
+    mapping(address => bool)    private _isExcludedFromReward;
+    address[]                   private _excluded;
 
-    uint256 public maxTransactionAmount;
+    uint256 public totalBurned;
 
+    /*//////////////////////////////////////////////////////////////
+                                 EVENTS
+    //////////////////////////////////////////////////////////////*/
+    event WalletUpdated(string indexed walletType, address indexed newWallet);
+    event UniswapPairUpdated(address indexed newPair);
+    event ExcludeFromFees(address indexed account, bool isExcluded);
+    event ExcludeFromRewards(address indexed account);
+    event IncludeInRewards(address indexed account);
     event TaxesDistributed(
         uint256 tithingAmount,
         uint256 burnAmount,
@@ -40,118 +59,118 @@ contract VictorVoltageToken is ERC20, ReentrancyGuard, Pausable {
         uint256 lpAmount,
         uint256 treasuryAmount
     );
-    event WalletUpdated(string walletType, address newWallet);
-    event UniswapPairSet(address newPair);
 
+    /*//////////////////////////////////////////////////////////////
+                              CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
     constructor(
         address _treasuryWallet,
         address _lpWallet,
         address _tithingWallet
-    ) ERC20("VictorVoltage", "V V") {
-        require(
-            _treasuryWallet != address(0) &&
-            _lpWallet != address(0) &&
-            _tithingWallet != address(0),
-            "Zero address not allowed"
-        );
+    ) ERC20("VictorVoltage", "V V") Ownable(msg.sender) {
+        require(_treasuryWallet  != address(0), "Zero treasury");
+        require(_lpWallet        != address(0), "Zero LP");
+        require(_tithingWallet   != address(0), "Zero tithing");
 
         treasuryWallet = _treasuryWallet;
-        lpWallet = _lpWallet;
-        tithingWallet = _tithingWallet;
+        lpWallet       = _lpWallet;
+        tithingWallet  = _tithingWallet;
 
-        _rTotal = (type(uint256).max - (type(uint256).max % TOTAL_SUPPLY));
-        _tTotal = TOTAL_SUPPLY;
-        _rOwned[msg.sender] = _rTotal;
+        _tTotal = INITIAL_SUPPLY;
+        _rTotal = type(uint256).max - (type(uint256).max % _tTotal);
 
-        _isExcludedFromFees[msg.sender] = true;
-        _isExcludedFromFees[address(this)] = true;
+        // mint and initial reflection balance
+        _mint(_msgSender(), _tTotal);
+        _rOwned[_msgSender()] = _rTotal;
 
-        maxTransactionAmount = TOTAL_SUPPLY / 100;
+        // exclude deployer & contract from fees
+        _isExcludedFromFee[_msgSender()] = true;
+        _isExcludedFromFee[address(this)] = true;
 
-        emit Transfer(address(0), msg.sender, TOTAL_SUPPLY);
+        // exclude contract and zero address from rewards
+        excludeFromReward(address(this));
+        excludeFromReward(address(0));
+
+        maxTxAmount = _tTotal / 100; // 1%
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                           ERC20 PUBLIC OVERRIDES
+    //////////////////////////////////////////////////////////////*/
+    function transfer(address to, uint256 amount)
+        public
+        override
+        whenNotPaused
+        returns (bool)
+    {
+        _taxTransfer(_msgSender(), to, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public override whenNotPaused returns (bool) {
+        _spendAllowance(from, _msgSender(), amount);
+        _taxTransfer(from, to, amount);
+        return true;
     }
 
     function totalSupply() public view override returns (uint256) {
         return _tTotal;
     }
 
-    function _update(
+    function balanceOf(address account) public view override returns (uint256) {
+        if (_isExcludedFromReward[account]) {
+            return _tOwned[account];
+        }
+        return tokenFromReflection(_rOwned[account]);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                             INTERNAL LOGIC
+    //////////////////////////////////////////////////////////////*/
+    function _taxTransfer(
         address sender,
         address recipient,
         uint256 amount
-    ) internal virtual override whenNotPaused {
-        require(
-            amount <= maxTransactionAmount,
-            "Transfer amount exceeds the maxTransactionAmount."
-        );
+    ) internal {
+        require(amount > 0, "Zero amount");
+        require(amount <= maxTxAmount, "Exceeds maxTx");
 
-        uint256 taxAmount;
-        if (_isExcludedFromFees[sender] || _isExcludedFromFees[recipient]) {
-            taxAmount = 0;
-        } else if (sender == uniswapPair || recipient == uniswapPair) {
-            taxAmount = (amount * BUY_SELL_TAX) / 10000;
-        } else {
-            taxAmount = (amount * TRANSFER_TAX) / 10000;
+        bool takeFee = !_isExcludedFromFee[sender] && !_isExcludedFromFee[recipient];
+        uint16 taxBp = takeFee
+            ? ((sender == uniswapPair || recipient == uniswapPair)
+                ? TRADE_TAX_BPS
+                : TRANSFER_TAX_BPS)
+            : 0;
+
+        uint256 fee = amount * taxBp / 10_000;
+        if (fee > 0) {
+            ERC20._transfer(sender, address(this), fee);
+            _distributeFee(fee);
         }
 
-        _tokenTransfer(sender, recipient, amount, taxAmount);
+        ERC20._transfer(sender, recipient, amount - fee);
     }
 
-    function _tokenTransfer(
-        address sender,
-        address recipient,
-        uint256 tAmount,
-        uint256 taxAmount
-    ) private {
-        (
-            uint256 rAmount,
-            uint256 rTransferAmount,
-            uint256 rFee,
-            uint256 tTransferAmount,
-            uint256 tFee
-        ) = _getValues(tAmount, taxAmount);
-
-        if (_rOwned[sender] < rAmount) {
-            revert ERC20InsufficientBalance(sender, _rOwned[sender], rAmount);
-        }
-        _rOwned[sender] = _rOwned[sender] - rAmount;
-        _rOwned[recipient] = _rOwned[recipient] + rTransferAmount;
-        _rOwned[address(this)] = _rOwned[address(this)] + rFee;
-
-        if (_isExcluded[sender]) {
-            _tOwned[sender] = _tOwned[sender] - tAmount;
-        }
-        if (_isExcluded[recipient]) {
-            _tOwned[recipient] = _tOwned[recipient] + tTransferAmount;
-        }
-        if (_isExcluded[address(this)]) {
-            _tOwned[address(this)] = _tOwned[address(this)] + tFee;
-        }
-
-        _reflectFee(rFee, tFee);
-        emit Transfer(sender, recipient, tTransferAmount);
-
-        if (taxAmount > 0) {
-            _distributeTaxes(taxAmount);
-        }
-    }
-
-    function _reflectFee(uint256 rFee, uint256 tFee) private {
-        _rTotal = _rTotal - rFee;
-        _tTotal = _tTotal - tFee;
-    }
-
-    function _getValues(
-        uint256 tAmount,
-        uint256 taxAmount
-    ) private view returns (uint256, uint256, uint256, uint256, uint256) {
-        uint256 tFee = taxAmount;
-        uint256 tTransferAmount = tAmount - tFee;
+    /*//////////////////////////////////////////////////////////////
+                            REFLECTION OPERATIONS
+    //////////////////////////////////////////////////////////////*/
+    function _reflect(uint256 tReflect) private {
         uint256 currentRate = _getRate();
-        uint256 rAmount = tAmount * currentRate;
-        uint256 rFee = tFee * currentRate;
-        uint256 rTransferAmount = rAmount - rFee;
-        return (rAmount, rTransferAmount, rFee, tTransferAmount, tFee);
+        uint256 rReflect     = tReflect * currentRate;
+        _rTotal -= rReflect;
+    }
+
+    function tokenFromReflection(uint256 rAmount)
+        public
+        view
+        returns (uint256)
+    {
+        require(rAmount <= _rTotal, "Exceeds rTotal");
+        return rAmount / _getRate();
     }
 
     function _getRate() private view returns (uint256) {
@@ -159,123 +178,150 @@ contract VictorVoltageToken is ERC20, ReentrancyGuard, Pausable {
         return rSupply / tSupply;
     }
 
-    function _getCurrentSupply() private view returns (uint256, uint256) {
+    function _getCurrentSupply()
+        private
+        view
+        returns (uint256, uint256)
+    {
         uint256 rSupply = _rTotal;
         uint256 tSupply = _tTotal;
+
         for (uint256 i = 0; i < _excluded.length; i++) {
-            if (
-                _rOwned[_excluded[i]] > rSupply ||
-                _tOwned[_excluded[i]] > tSupply
-            ) return (_rTotal, _tTotal);
-            rSupply = rSupply - _rOwned[_excluded[i]];
-            tSupply = tSupply - _tOwned[_excluded[i]];
+            address excl = _excluded[i];
+            if (_rOwned[excl] > rSupply || _tOwned[excl] > tSupply) {
+                return (_rTotal, _tTotal);
+            }
+            rSupply -= _rOwned[excl];
+            tSupply -= _tOwned[excl];
         }
-        if (rSupply < _rTotal / _tTotal) return (_rTotal, _tTotal);
+        if (rSupply < (_rTotal / _tTotal)) {
+            return (_rTotal, _tTotal);
+        }
         return (rSupply, tSupply);
     }
 
-    function _distributeTaxes(uint256 taxAmount) private {
-        uint256 tithingAmount = (taxAmount * TITHING_TAX) / BUY_SELL_TAX;
-        uint256 burnAmount = (taxAmount * BURN_TAX) / BUY_SELL_TAX;
-        uint256 reflectionAmount = (taxAmount * REFLECTION_TAX) / BUY_SELL_TAX;
-        uint256 lpAmount = (taxAmount * LP_INJECTION_TAX) / BUY_SELL_TAX;
-        uint256 treasuryAmount = taxAmount - tithingAmount - burnAmount - reflectionAmount - lpAmount;
+    /*//////////////////////////////////////////////////////////////
+                            TAX DISTRIBUTION
+    //////////////////////////////////////////////////////////////*/
+    function _distributeFee(uint256 fee) private nonReentrant {
+        uint256 tithingAmt  = fee * TITHING_BPS    / TRADE_TAX_BPS;
+        uint256 burnAmt     = fee * BURN_BPS       / TRADE_TAX_BPS;
+        uint256 reflectAmt  = fee * REFLECTION_BPS / TRADE_TAX_BPS;
+        uint256 lpAmt       = fee * LP_BPS         / TRADE_TAX_BPS;
+        uint256 treasuryAmt = fee - tithingAmt - burnAmt - reflectAmt - lpAmt;
 
-        _transfer(address(this), treasuryWallet, treasuryAmount);
-        _transfer(address(this), lpWallet, lpAmount);
-        _transfer(address(this), tithingWallet, tithingAmount);
-        _burn(address(this), burnAmount);
+        ERC20._transfer(address(this), tithingWallet, tithingAmt);
+        ERC20._transfer(address(this), lpWallet,       lpAmt);
+        ERC20._transfer(address(this), treasuryWallet, treasuryAmt);
 
-        totalBurned += burnAmount;
-        _tTotal -= burnAmount;
+        _burn(address(this), burnAmt);
+        totalBurned += burnAmt;
+        _tTotal    -= burnAmt;
+
+        _reflect(reflectAmt);
 
         emit TaxesDistributed(
-            tithingAmount,
-            burnAmount,
-            reflectionAmount,
-            lpAmount,
-            treasuryAmount
+            tithingAmt,
+            burnAmt,
+            reflectAmt,
+            lpAmt,
+            treasuryAmt
         );
     }
 
-    // Publicly callable functions, formerly onlyOwner
-
-    function setUniswapPair(address _uniswapPair) external {
-        require(_uniswapPair != address(0), "Invalid Uniswap pair address");
-        uniswapPair = _uniswapPair;
-        emit UniswapPairSet(_uniswapPair);
+    /*//////////////////////////////////////////////////////////////
+                             ADMIN FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+    function pause() external onlyOwner {
+        _pause();
     }
 
-    function excludeFromFees(address account, bool excluded) external {
-        require(account != address(0), "Cannot exclude zero address");
-        _isExcludedFromFees[account] = excluded;
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    function setUniswapPair(address pair) external onlyOwner {
+        require(pair != address(0), "Zero pair");
+        uniswapPair = pair;
+        emit UniswapPairUpdated(pair);
+    }
+
+    function updateTreasuryWallet(address newWallet) external onlyOwner {
+        require(newWallet != address(0), "Zero addr");
+        treasuryWallet = newWallet;
+        emit WalletUpdated("Treasury", newWallet);
+    }
+
+    function updateLpWallet(address newWallet) external onlyOwner {
+        require(newWallet != address(0), "Zero addr");
+        lpWallet = newWallet;
+        emit WalletUpdated("LP", newWallet);
+    }
+
+    function updateTithingWallet(address newWallet) external onlyOwner {
+        require(newWallet != address(0), "Zero addr");
+        tithingWallet = newWallet;
+        emit WalletUpdated("Tithing", newWallet);
+    }
+
+    function excludeFromFees(address account, bool excluded) external onlyOwner {
+        _isExcludedFromFee[account] = excluded;
+        emit ExcludeFromFees(account, excluded);
     }
 
     function isExcludedFromFees(address account) external view returns (bool) {
-        return _isExcludedFromFees[account];
+        return _isExcludedFromFee[account];
     }
 
-    function updateTreasuryWallet(address newTreasuryWallet) external {
-        require(newTreasuryWallet != address(0), "Cannot be zero address");
-        treasuryWallet = newTreasuryWallet;
-        emit WalletUpdated("Treasury Wallet", newTreasuryWallet);
-    }
-
-    function updateLpWallet(address newLpWallet) external {
-        require(newLpWallet != address(0), "Cannot be zero address");
-        lpWallet = newLpWallet;
-        emit WalletUpdated("LP Wallet", newLpWallet);
-    }
-
-    function updateTithingWallet(address newTithingWallet) external {
-        require(newTithingWallet != address(0), "Cannot be zero address");
-        tithingWallet = newTithingWallet;
-        emit WalletUpdated("Tithing Wallet", newTithingWallet);
-    }
-
-    function excludeFromReward(address account) external {
-        require(!_isExcluded[account], "Already excluded");
+    function excludeFromReward(address account) public onlyOwner {
+        require(!_isExcludedFromReward[account], "Already excluded");
         if (_rOwned[account] > 0) {
             _tOwned[account] = tokenFromReflection(_rOwned[account]);
         }
-        _isExcluded[account] = true;
+        _isExcludedFromReward[account] = true;
         _excluded.push(account);
+        emit ExcludeFromRewards(account);
     }
 
-    function includeInReward(address account) external {
-        require(_isExcluded[account], "Not excluded");
-        for (uint256 i = 0; i < _excluded.length; i++) {
+    function includeInReward(address account) external onlyOwner {
+        require(_isExcludedFromReward[account], "Not excluded");
+        for (uint256 i; i < _excluded.length; i++) {
             if (_excluded[i] == account) {
                 _excluded[i] = _excluded[_excluded.length - 1];
                 _tOwned[account] = 0;
-                _isExcluded[account] = false;
+                _isExcludedFromReward[account] = false;
                 _excluded.pop();
                 break;
             }
         }
+        emit IncludeInRewards(account);
     }
 
-    function tokenFromReflection(uint256 rAmount) public view returns (uint256) {
-        require(rAmount <= _rTotal, "Too much");
-        uint256 currentRate = _getRate();
-        return rAmount / currentRate;
-    }
-
-    function balanceOf(address account) public view override returns (uint256) {
-        if (_isExcluded[account]) return _tOwned[account];
-        return tokenFromReflection(_rOwned[account]);
-    }
-
-    function setMaxTransactionAmount(uint256 amount) external {
-        require(amount > 0 && amount <= TOTAL_SUPPLY / 10, "Invalid amount");
-        maxTransactionAmount = amount;
-    }
-
-    function pause() external {
-        _pause();
-    }
-
-    function unpause() external {
-        _unpause();
+    function setMaxTxAmount(uint256 amount) external onlyOwner {
+        require(amount > 0 && amount <= _tTotal / 10, "Invalid maxTx");
+        maxTxAmount = amount;
+        emit WalletUpdated("MaxTx", address(uint160(amount)));
     }
 }
+
+ 
+
+     
+
+   
+       
+      
+      
+   
+     
+       
+        
+        
+
+    
+
+  
+     
+    
+   
+ 
